@@ -9,6 +9,10 @@ Requirements:
 - Python 3.6+
 - piexif (install with: pip install piexif)
 - Pillow (install with: pip install Pillow)
+
+Note: For handling files with special characters or spaces in filenames or paths,
+enclose the path in quotes when running the script:
+  python photo_timestamp_updater.py "/path/with spaces/to/my photos"
 """
 
 import os
@@ -72,55 +76,71 @@ def update_photo_timestamps(file_path: Path, dry_run: bool = False) -> Tuple[boo
     if not timestamp:
         return False, f"Could not extract timestamp from filename: {filename}"
     
-    # Ensure the file is a supported image
-    try:
-        img = Image.open(file_path)
-    except Exception as e:
-        return False, f"Error opening image: {e}"
-    
     # Format timestamp for EXIF
     exif_timestamp = format_exif_datetime(timestamp)
     
+    if dry_run:
+        return True, f"Would update timestamp for {filename} to {exif_timestamp}"
+    
+    # Method 1: Try using piexif directly on the file
     try:
-        # Get existing EXIF data or create new
+        # First try a more direct approach with piexif
         try:
-            exif_dict = piexif.load(img.info.get('exif', b''))
+            exif_dict = piexif.load(str(file_path))
         except Exception:
             exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}, 'thumbnail': None}
         
         # Update all date-related EXIF tags
-        date_tags = [
-            (piexif.ExifIFD.DateTimeOriginal, exif_timestamp),
-            (piexif.ExifIFD.DateTimeDigitized, exif_timestamp),
-            (piexif.ImageIFD.DateTime, exif_timestamp)
-        ]
-        
-        for tag, value in date_tags:
-            exif_dict['Exif'][tag] = value.encode('ascii')
-        
+        if 'Exif' not in exif_dict:
+            exif_dict['Exif'] = {}
         if '0th' not in exif_dict:
             exif_dict['0th'] = {}
+            
+        # Set DateTime tags
         exif_dict['0th'][piexif.ImageIFD.DateTime] = exif_timestamp.encode('ascii')
+        exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_timestamp.encode('ascii')
+        exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = exif_timestamp.encode('ascii')
         
-        # Prepare EXIF bytes
+        # Insert the EXIF data
         exif_bytes = piexif.dump(exif_dict)
+        piexif.insert(exif_bytes, str(file_path))
         
-        if dry_run:
-            return True, f"Would update timestamp for {filename} to {exif_timestamp}"
-        
-        # Save with updated EXIF
-        img.save(file_path, exif=exif_bytes)
-        
-        # Also update file modification time
+        # Update file modification time
         unix_time = time.mktime(timestamp.timetuple())
         os.utime(file_path, (unix_time, unix_time))
         
         return True, f"Updated timestamp for {filename} to {exif_timestamp}"
-    
+        
     except Exception as e:
-        return False, f"Error updating EXIF data for {filename}: {e}"
-    finally:
-        img.close()
+        # If direct piexif method failed, try with PIL as fallback
+        try:
+            img = Image.open(file_path)
+            
+            # Create minimal EXIF dictionary with just the date tags
+            exif_dict = {'0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}, 'thumbnail': None}
+            exif_dict['0th'][piexif.ImageIFD.DateTime] = exif_timestamp.encode('ascii')
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = exif_timestamp.encode('ascii')
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = exif_timestamp.encode('ascii')
+            
+            # Dump to bytes
+            exif_bytes = piexif.dump(exif_dict)
+            
+            # Save to a temporary file first
+            temp_file = str(file_path) + ".tmp"
+            img.save(temp_file, exif=exif_bytes)
+            img.close()
+            
+            # Replace original with temporary file
+            os.replace(temp_file, file_path)
+            
+            # Update file modification time
+            unix_time = time.mktime(timestamp.timetuple())
+            os.utime(file_path, (unix_time, unix_time))
+            
+            return True, f"Updated timestamp for {filename} to {exif_timestamp} (fallback method)"
+            
+        except Exception as e2:
+            return False, f"Error updating EXIF data for {filename}: {e}; Fallback also failed: {e2}"
 
 
 def process_directory(directory: Path, recursive: bool = False, 
