@@ -1,4 +1,74 @@
-#!/usr/bin/env python3
+def set_file_times(file_path: Path, timestamp: datetime.datetime) -> bool:
+    """
+    Set both modification and creation time of a file.
+    Returns True if successful, False otherwise.
+    """
+    unix_time = time.mktime(timestamp.timetuple())
+    
+    # Always set the modification time
+    try:
+        os.utime(file_path, (unix_time, unix_time))
+    except Exception as e:
+        print(f"Warning: Failed to set modification time: {e}")
+        return False
+    
+    # Try to set creation time based on platform
+    if HAS_CREATION_TIME:
+        try:
+            if platform.system() == 'Windows':
+                # Windows implementation
+                handle = win32file.CreateFile(
+                    str(file_path),
+                    win32file.GENERIC_WRITE,
+                    0, None, 
+                    win32con.OPEN_EXISTING,
+                    0, None
+                )
+                win32file.SetFileTime(
+                    handle,
+                    timestamp,  # Creation time
+                    None,       # Last access time (leave unchanged)
+                    timestamp   # Last write time
+                )
+                handle.close()
+            elif platform.system() == 'Darwin':  # macOS
+                # Convert path to bytes
+                path_bytes = str(file_path).encode('utf-8')
+                
+                # Create C-compatible types
+                c_path = c_char_p(path_bytes)
+                c_time = c_double(unix_time)
+                
+                # macOS: Call setattrlist to set creation time
+                # This requires special permissions or admin rights
+                try:
+                    # Use setfile command as alternative
+                    os.system(f"SetFile -d '{timestamp.strftime('%m/%d/%Y %H:%M:%S')}' '{file_path}'")
+                except:
+                    print(f"Warning: Failed to set creation time on macOS for {file_path.name}")
+            else:  # Linux and others with birth time support
+                if 'birth_time' in dir(os.stat_result):
+                    try:
+                        # Some Linux filesystems support birthtime
+                        # Attempt to use it via lower level calls
+                        # This varies by filesystem and may not work everywhere
+                        # For ext4 with recent kernels, this might work
+                        os.system(f"touch -t {timestamp.strftime('%Y%m%d%H%M.%S')} '{file_path}'")
+                    except:
+                        print(f"Warning: Failed to set creation time on Linux for {file_path.name}")
+        except Exception as e:
+            print(f"Warning: Failed to set creation time: {e}")
+            return False
+    else:
+        if platform.system() == 'Darwin':  # macOS fallback
+            try:
+                # Try using SetFile command which is available on most macOS systems
+                date_str = timestamp.strftime('%m/%d/%Y %H:%M:%S')
+                os.system(f"SetFile -d '{date_str}' '{file_path}'")
+            except:
+                print(f"Warning: Failed to set creation time using SetFile for {file_path.name}")
+                
+    return True#!/usr/bin/env python3
 """
 Photo Timestamp Updater
 
@@ -21,6 +91,7 @@ import sys
 import time
 import datetime
 import argparse
+import platform
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -31,6 +102,32 @@ except ImportError:
     print("Required libraries not installed. Please run:")
     print("pip install piexif Pillow")
     sys.exit(1)
+
+# Try to import platform-specific modules for creation time
+try:
+    if platform.system() == 'Windows':
+        import win32file
+        import win32con
+        HAS_CREATION_TIME = True
+    elif platform.system() == 'Darwin':  # macOS
+        import stat
+        from ctypes import cdll, c_char_p, c_int, c_double
+        try:
+            libc = cdll.LoadLibrary('libc.dylib')
+            HAS_CREATION_TIME = True
+        except:
+            HAS_CREATION_TIME = False
+    else:  # Linux and others
+        try:
+            import os
+            import ctypes
+            libc = ctypes.CDLL('libc.so.6')
+            HAS_CREATION_TIME = 'birth_time' in dir(os.stat_result)
+        except:
+            HAS_CREATION_TIME = False
+except ImportError:
+    HAS_CREATION_TIME = False
+
 
 
 def extract_timestamp_from_filename(filename: str) -> Optional[datetime.datetime]:
@@ -105,9 +202,8 @@ def update_photo_timestamps(file_path: Path, dry_run: bool = False) -> Tuple[boo
         exif_bytes = piexif.dump(exif_dict)
         piexif.insert(exif_bytes, str(file_path))
         
-        # Update file modification time
-        unix_time = time.mktime(timestamp.timetuple())
-        os.utime(file_path, (unix_time, unix_time))
+        # Update file modification and creation times
+        set_file_times(file_path, timestamp)
         
         return True, f"Updated timestamp for {filename} to {exif_timestamp}"
         
@@ -133,9 +229,8 @@ def update_photo_timestamps(file_path: Path, dry_run: bool = False) -> Tuple[boo
             # Replace original with temporary file
             os.replace(temp_file, file_path)
             
-            # Update file modification time
-            unix_time = time.mktime(timestamp.timetuple())
-            os.utime(file_path, (unix_time, unix_time))
+            # Update file modification and creation times
+            set_file_times(file_path, timestamp)
             
             return True, f"Updated timestamp for {filename} to {exif_timestamp} (fallback method)"
             
