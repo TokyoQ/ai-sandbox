@@ -9,6 +9,9 @@
  * Prerequisites:
  * - Node.js 16+
  * - npm install exiftool-vendored fs-extra glob yargs
+ * 
+ * Usage with paths containing spaces:
+ * node photo_timestamp_updater.js "/path/with spaces/to photos"
  */
 
 import { exiftool } from 'exiftool-vendored';
@@ -82,18 +85,65 @@ async function processImage(
       };
     }
     
-    // Update EXIF metadata
-    await exiftool.write(filePath, {
-      AllDates: exifTimestamp,  // Updates all date/time fields at once
-    });
-    
-    // Update file modification time
-    await fs.utimes(filePath, timestamp, timestamp);
-    
-    return { 
-      success: true, 
-      message: `Updated timestamp for ${filename} to ${exifTimestamp}` 
-    };
+    // Method 1: Try using exiftool with direct approach
+    try {
+      // Update EXIF metadata - using more basic command structure
+      await exiftool.write(filePath, {
+        DateTimeOriginal: exifTimestamp,
+        CreateDate: exifTimestamp,
+        ModifyDate: exifTimestamp
+      }, ['-overwrite_original']);
+      
+      // Update file modification time
+      await fs.utimes(filePath, timestamp, timestamp);
+      
+      return { 
+        success: true, 
+        message: `Updated timestamp for ${filename} to ${exifTimestamp}` 
+      };
+    } catch (primaryError) {
+      // Method 2: If first method fails, try alternative approach with temp file
+      try {
+        // Create a temporary directory in the same location as the file
+        const tempDir = path.join(path.dirname(filePath), '.temp_exif');
+        await fs.ensureDir(tempDir);
+        
+        // Copy file to temp location
+        const tempFile = path.join(tempDir, path.basename(filePath));
+        await fs.copy(filePath, tempFile);
+        
+        // Apply exif to temp file
+        await exiftool.write(tempFile, {
+          DateTimeOriginal: exifTimestamp,
+          CreateDate: exifTimestamp,
+          ModifyDate: exifTimestamp
+        }, ['-overwrite_original']);
+        
+        // Copy back to original (with overwrite)
+        await fs.copy(tempFile, filePath, { overwrite: true });
+        
+        // Clean up temp file
+        await fs.remove(tempFile);
+        
+        // Try to remove temp directory if empty
+        try {
+          await fs.rmdir(tempDir);
+        } catch (e) {
+          // Ignore error if directory not empty
+        }
+        
+        // Update file modification time
+        await fs.utimes(filePath, timestamp, timestamp);
+        
+        return { 
+          success: true, 
+          message: `Updated timestamp for ${filename} to ${exifTimestamp} (fallback method)` 
+        };
+      } catch (fallbackError) {
+        throw new Error(`Primary method failed: ${primaryError instanceof Error ? primaryError.message : String(primaryError)}; 
+                        Fallback method also failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+      }
+    }
   } catch (error) {
     return { 
       success: false, 
@@ -109,14 +159,18 @@ async function processDirectory(
 ): Promise<{ success: number; failure: number }> {
   const { recursive, dryRun, extensions } = options;
   
-  // Create the glob pattern
+  // Create the glob pattern with special handling for paths with spaces
+  const safeDirectory = directory.replace(/\\/g, '/');
   const pattern = recursive 
-    ? `${directory}/**/*.{${extensions.join(',')}}` 
-    : `${directory}/*.{${extensions.join(',')}}`;
+    ? `${safeDirectory}/**/*.{${extensions.join(',')}}` 
+    : `${safeDirectory}/*.{${extensions.join(',')}}`;
   
   let imageFiles: string[] = [];
   try {
-    imageFiles = glob.sync(pattern, { nocase: true });
+    imageFiles = glob.sync(pattern, { 
+      nocase: true,
+      windowsPathsNoEscape: true  // Better handling of Windows paths
+    });
   } catch (error) {
     console.error('Error finding files:', error instanceof Error ? error.message : String(error));
     return { success: 0, failure: 0 };
