@@ -1,3 +1,64 @@
+#!/usr/bin/env python3
+"""
+Photo Timestamp Updater
+
+This script updates the EXIF timestamp metadata of photos based on timestamps
+embedded in their filenames (format: YYYYMMDDhhmmss).
+
+Requirements:
+- Python 3.6+
+- piexif (install with: pip install piexif)
+- Pillow (install with: pip install Pillow)
+
+Note: For handling files with special characters or spaces in filenames or paths,
+enclose the path in quotes when running the script:
+  python photo_timestamp_updater.py "/path/with spaces/to/my photos"
+"""
+
+import os
+import re
+import sys
+import time
+import datetime
+import argparse
+import platform
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+try:
+    import piexif
+    from PIL import Image
+except ImportError:
+    print("Required libraries not installed. Please run:")
+    print("pip install piexif Pillow")
+    sys.exit(1)
+
+# Try to import platform-specific modules for creation time
+try:
+    if platform.system() == 'Windows':
+        import win32file
+        import win32con
+        HAS_CREATION_TIME = True
+    elif platform.system() == 'Darwin':  # macOS
+        import stat
+        from ctypes import cdll, c_char_p, c_int, c_double
+        try:
+            libc = cdll.LoadLibrary('libc.dylib')
+            HAS_CREATION_TIME = True
+        except:
+            HAS_CREATION_TIME = False
+    else:  # Linux and others
+        try:
+            import os
+            import ctypes
+            libc = ctypes.CDLL('libc.so.6')
+            HAS_CREATION_TIME = 'birth_time' in dir(os.stat_result)
+        except:
+            HAS_CREATION_TIME = False
+except ImportError:
+    HAS_CREATION_TIME = False
+
+
 def set_file_times(file_path: Path, timestamp: datetime.datetime) -> bool:
     """
     Set both modification and creation time of a file.
@@ -68,66 +129,7 @@ def set_file_times(file_path: Path, timestamp: datetime.datetime) -> bool:
             except:
                 print(f"Warning: Failed to set creation time using SetFile for {file_path.name}")
                 
-    return True#!/usr/bin/env python3
-"""
-Photo Timestamp Updater
-
-This script updates the EXIF timestamp metadata of photos based on timestamps
-embedded in their filenames (format: YYYYMMDDhhmmss).
-
-Requirements:
-- Python 3.6+
-- piexif (install with: pip install piexif)
-- Pillow (install with: pip install Pillow)
-
-Note: For handling files with special characters or spaces in filenames or paths,
-enclose the path in quotes when running the script:
-  python photo_timestamp_updater.py "/path/with spaces/to/my photos"
-"""
-
-import os
-import re
-import sys
-import time
-import datetime
-import argparse
-import platform
-from pathlib import Path
-from typing import List, Optional, Tuple
-
-try:
-    import piexif
-    from PIL import Image
-except ImportError:
-    print("Required libraries not installed. Please run:")
-    print("pip install piexif Pillow")
-    sys.exit(1)
-
-# Try to import platform-specific modules for creation time
-try:
-    if platform.system() == 'Windows':
-        import win32file
-        import win32con
-        HAS_CREATION_TIME = True
-    elif platform.system() == 'Darwin':  # macOS
-        import stat
-        from ctypes import cdll, c_char_p, c_int, c_double
-        try:
-            libc = cdll.LoadLibrary('libc.dylib')
-            HAS_CREATION_TIME = True
-        except:
-            HAS_CREATION_TIME = False
-    else:  # Linux and others
-        try:
-            import os
-            import ctypes
-            libc = ctypes.CDLL('libc.so.6')
-            HAS_CREATION_TIME = 'birth_time' in dir(os.stat_result)
-        except:
-            HAS_CREATION_TIME = False
-except ImportError:
-    HAS_CREATION_TIME = False
-
+    return True
 
 
 def extract_timestamp_from_filename(filename: str) -> Optional[datetime.datetime]:
